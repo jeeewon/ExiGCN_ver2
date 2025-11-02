@@ -1,0 +1,67 @@
+# -------------------------------
+# System / Editor
+# -------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+
+# -------------------------------
+# Build / Packaging
+# -------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+
+# -------------------------------
+# Virtual environments
+# -------------------------------
+venv/
+.env/
+.venv/
+
+# -------------------------------
+# Checkpoints / Logs / Outputs
+# -------------------------------
+logs/
+wandb/
+runs/
+*.log
+*.out
+*.err
+*.pt
+*.pth
+*.ckpt
+
+# -------------------------------
+# Datasets
+# -------------------------------
+data/
+dataset/
+datasets/
+*.npz
+*.npy
+*.csv
+*.tsv
+*.txt
+*.zip
+*.tar
+*.gz
+
+# -------------------------------
+# Jupyter / Temporary
+# -------------------------------
+.ipynb_checkpoints/
+*.ipynb~
+*.tmp
+*.swp
+
+# -------------------------------
+# OS-generated
+# -------------------------------
+ehthumbs.db
+Icon?
+Desktop.ini

@@ -1,0 +1,45 @@
+# OGBN-Arxiv specific configuration
+dataset:
+  name: "ogbn_arxiv"
+  num_classes: 40
+  num_features: 128
+  num_nodes: 169343
+  num_edges: 1166243
+
+model:
+  type: "exigcn"
+  num_layers: 3              # 더 큰 그래프 → 3 layers
+  hidden_dim: 256
+  dropout: 0.5
+  activation: "relu"
+
+training:
+  epochs: 300
+  learning_rate: 0.01      # Initial training LR
+  retraining_lr: 0.005      # Retraining LR (can be different from initial)
+  weight_decay: 0.0
+  optimizer: "adam"
+  patience: 100
+
+experiment:
+  initial_ratio: 0.9
+  update_stages: [0.02, 0.04, 0.06, 0.08, 0.10]
+  num_runs: 1
+  seed: 42
+
+device:
+  use_cuda: true
+  gpu_id: 0
+
+data:
+  root: "./data"
+  split: "public"
+  normalize_features: true
+  normalize_adj: true
+  add_self_loops: true
+  use_sparse: true
+
+logging:
+  use_wandb: false
+  use_tensorboard: false
+  experiment_name: "ogbn_arxiv_exigcn"

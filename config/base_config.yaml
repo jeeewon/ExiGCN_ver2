@@ -1,0 +1,69 @@
+# Base configuration for ExiGCN experiments
+
+model:
+  type: "GCN"
+  num_layers: 2
+  hidden_dim: 
+    cora_full: 128        
+    amazon_computers: 128           
+    ogbn_arxiv: 256       
+    reddit: 256           
+  dropout: 0.5
+  activation: "relu"
+  use_batch_norm: false
+
+training:
+  epochs: 200
+  learning_rate: 0.01
+  weight_decay: 0.0005
+  optimizer: "adam"
+  early_stopping: false
+  patience: 50
+    retraining:
+    learning_rate: 0.01    
+    freeze_base_weights: true
+
+experiment:
+  initial_ratio: 0.9          # 90% for initial training
+  update_stages: [0.02, 0.04, 0.06, 0.08, 0.10]
+  num_runs: 10                # Number of repeated experiments
+  seed: 42
+  scenarios:
+    - "incremental"           # Node/edge addition
+    - "deletion"              # Node/edge removal
+  stratification:
+    method: "percentile"         # "percentile" or "uniform" or "none"
+    percentiles: [33, 67]        # degree 구간 나누기
+    ensure_connectivity: true    # 고립 노드 방지
+
+device:
+  use_cuda: true
+  gpu_id: 0
+  mixed_precision: false      # 속도 ↑, 정확도 약간 ↓
+  cudnn_benchmark: true       # 자동 최적화
+
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_interval: 10
+  save_checkpoints: true
+  checkpoint_dir: "results/checkpoints"
+
+data:
+  root: "./data"
+  split: "public"             # or "random"
+  train_ratio: 0.6
+  val_ratio: 0.2
+  test_ratio: 0.2
+  normalize_features: true
+  add_self_loops: true
+  use_sparse: true
+
+timing:
+  measure_detailed: true
+  print_every_n_epochs: 10 
+  log_memory: true         
+
+comparison:
+  methods: ["full_retraining", "exigcn"]
+  metrics: ["accuracy", "f1_micro", "f1_macro"]
