@@ -1,0 +1,44 @@
+# Configuration for Reddit dataset
+
+model:
+  type: "exigcn"
+  num_layers: 2
+  hidden_dim: 512
+  dropout: 0.2
+  activation: "relu"
+
+training:
+  epochs: 100
+  learning_rate: 0.005
+  retraining_lr: 0.002
+  weight_decay: 0.0
+  optimizer: "adam"
+  patience: 30
+
+experiment:
+  initial_ratio: 0.9
+  update_stages: [0.02, 0.04, 0.06, 0.08, 0.10]
+  num_runs: 3
+  seed: 42
+
+device:
+  use_cuda: true
+  gpu_id: 0
+
+dataset:
+  name: "reddit"
+  num_classes: 41
+  num_features: 602
+  num_nodes: 232965
+
+data:
+  root: "./data"
+  normalize_features: true
+  normalize_adj: true
+  add_self_loops: true
+  use_sparse: true
+
+logging:
+  use_wandb: false
+  use_tensorboard: false
+  experiment_name: "reddit_exigcn"

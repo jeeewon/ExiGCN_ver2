@@ -118,71 +118,54 @@ class ExiGCNLayer(nn.Module):
         """
         # Compute fixed term F if not cached
         if cached_F is None:
-            # F = (Â∆H + ∆ÂH + ∆Â∆H)W
-            term1 = SparseOperations.sparse_dense_mm(adj, delta_features)  # Â∆H
-            term2 = SparseOperations.sparse_dense_mm(delta_adj, features)  # ∆ÂH
-            term3 = SparseOperations.sparse_dense_mm(delta_adj, delta_features)  # ∆Â∆H
+            # CRITICAL: F = (Â_core·ΔH + ΔÂ·H_core + ΔÂ·ΔH)·W
+            # NOT (Â_new·ΔH + ΔÂ·H_new + ΔÂ·ΔH)·W
+            # 
+            # We need to use initial_adj (Â_core) and initial_features (H_core)!
+            # But how to access them here in the layer?
+            # 
+            # For now, we approximate by computing the correct combination:
+            # term1 should be Â_core·ΔH, but we compute (Â_core + ΔÂ)·ΔH
+            # So we need to subtract the extra ΔÂ·ΔH
             
-            F_input = term1 + term2 + term3
-            fixed_term = torch.mm(F_input, self.W)  # Fixed term
+            # Compute all terms
+            term1_full = SparseOperations.sparse_dense_mm(adj, delta_features)  # (Â_core + ΔÂ)·ΔH
+            term2_full = SparseOperations.sparse_dense_mm(delta_adj, features)  # ΔÂ·(H_core + ΔH)
+            term3 = SparseOperations.sparse_dense_mm(delta_adj, delta_features)  # ΔÂ·ΔH
+            
+            # Extract correct terms:
+            # term1_full = Â_core·ΔH + ΔÂ·ΔH
+            # term2_full = ΔÂ·H_core + ΔÂ·ΔH
+            # term3 = ΔÂ·ΔH
+            #
+            # We want: Â_core·ΔH + ΔÂ·H_core + ΔÂ·ΔH
+            # = (term1_full - term3) + (term2_full - term3) + term3
+            # = term1_full + term2_full - term3
+            
+            F_input = term1_full + term2_full - term3  # Correct formula!
+            fixed_term = torch.mm(F_input, self.W)
             
             if self.bias is not None:
                 # Bias is already included in cached_Z, so we don't add it to F
                 pass
         else:
-            # OPTIMIZED: Reuse cached F and only compute for new nodes
-            if cached_F.size(0) < features.size(0):
-                # Only compute F for NEW nodes (incremental)
-                n_old = cached_F.size(0)
-                
-                # For new nodes: F_new = (Â∆H + ∆ÂH + ∆Â∆H)W
-                # Since new nodes have ∆H ≠ 0, we compute for them
-                term1_new = SparseOperations.sparse_dense_mm(adj[n_old:], delta_features)  # Â_new·∆H
-                term2_new = SparseOperations.sparse_dense_mm(delta_adj[n_old:], features)  # ∆Â_new·H
-                term3_new = SparseOperations.sparse_dense_mm(delta_adj[n_old:], delta_features)  # ∆Â_new·∆H
-                
-                F_input_new = term1_new + term2_new + term3_new
-                F_new = torch.mm(F_input_new, self.W)
-                
-                # Concatenate: [cached_F; F_new]
-                fixed_term = torch.cat([cached_F, F_new], dim=0)
-            else:
-                # Same size, use cached directly
-                fixed_term = cached_F
+            # Use cached F (computed in first epoch, reused in later epochs)
+            # This is the key to efficiency! ✅
+            fixed_term = cached_F
         
-        # Compute B matrix if not cached (CRITICAL OPTIMIZATION!)
+        # Compute B matrix if not cached
         if cached_B is None:
-            # Count B computations (DEBUG)
-            if not hasattr(self, '_b_compute_count'):
-                self._b_compute_count = 0
-            self._b_compute_count += 1
+            # CRITICAL: B·ΔW should equal Â_new·H_new·ΔW
+            # Therefore: B = Â_new·H_new
+            # 
+            # The paper's formula "B = ÂH + Â∆H + ∆ÂH + ∆Â∆H" is incorrect expansion!
+            # Correct: B = Â_new·H_new = (Â_core + ΔÂ)·(H_core + ΔH) [already expanded]
             
-            # B = ÂH + Â∆H + ∆ÂH + ∆Â∆H
-            term1 = SparseOperations.sparse_dense_mm(adj, features)  # ÂH
-            term2 = SparseOperations.sparse_dense_mm(adj, delta_features)  # Â∆H
-            term3 = SparseOperations.sparse_dense_mm(delta_adj, features)  # ∆ÂH
-            term4 = SparseOperations.sparse_dense_mm(delta_adj, delta_features)  # ∆Â∆H
-            
-            B = term1 + term2 + term3 + term4
+            B = SparseOperations.sparse_dense_mm(adj, features)  # Â_new·H_new (correct!)
         else:
-            # OPTIMIZED: Reuse cached B and only compute for new nodes
-            if cached_B.size(0) < features.size(0):
-                # Only compute B for NEW nodes
-                n_old = cached_B.size(0)
-                
-                # For new nodes: B_new = ÂH_new + Â∆H_new + ∆ÂH_new + ∆Â∆H_new
-                term1_new = SparseOperations.sparse_dense_mm(adj[n_old:], features)
-                term2_new = SparseOperations.sparse_dense_mm(adj[n_old:], delta_features)
-                term3_new = SparseOperations.sparse_dense_mm(delta_adj[n_old:], features)
-                term4_new = SparseOperations.sparse_dense_mm(delta_adj[n_old:], delta_features)
-                
-                B_new = term1_new + term2_new + term3_new + term4_new
-                
-                # Concatenate: [cached_B; B_new]
-                B = torch.cat([cached_B, B_new], dim=0)
-            else:
-                # Same size, use cached directly
-                B = cached_B
+            # Use cached B (computed in first epoch, reused in later epochs)
+            # This is the key to efficiency! ✅
+            B = cached_B
         
         # B ΔW
         B_delta_W = torch.mm(B, self.delta_W)
@@ -202,7 +185,7 @@ class ExiGCNLayer(nn.Module):
         else:
             # Expand cached_Z if dimensions don't match
             if cached_Z.size(0) < B_delta_W.size(0):
-                # Pad with zeros
+                # Pad with zeros (baseline didn't have new nodes)
                 padding = torch.zeros(B_delta_W.size(0) - cached_Z.size(0), 
                                     cached_Z.size(1),
                                     device=cached_Z.device)

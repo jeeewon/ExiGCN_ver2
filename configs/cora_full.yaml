@@ -1,34 +1,35 @@
 # Configuration for Cora-Full dataset
-dataset:
-  name: "cora_full"
-  num_classes: 70
-  num_features: 8710
-  num_nodes: 19793
-  
+
 model:
   type: "exigcn"
   num_layers: 3
   hidden_dim: 256
-  dropout: 0.5
+  dropout: 0.4
   activation: "relu"
 
 training:
-  epochs: 500
-  learning_rate: 0.01      # Initial training LR
-  retraining_lr: 0.001      # Retraining LR (can be different from initial)
+  epochs: 300              # Reduced from 500 for efficiency
+  learning_rate: 0.005      # Initial training LR
+  retraining_lr: 0.005      # Retraining LR
   weight_decay: 0.0005
   optimizer: "adam"
-  patience: 100
+  patience: 150            # Reduced from 150
 
 experiment:
   initial_ratio: 0.9
   update_stages: [0.02, 0.04, 0.06, 0.08, 0.10]
-  num_runs: 1
+  num_runs: 10
   seed: 42
 
 device:
   use_cuda: true
   gpu_id: 0
+
+dataset:
+  name: "cora_full"
+  num_classes: 70
+  num_features: 8710
+  num_nodes: 19793
 
 data:
   root: "./data"

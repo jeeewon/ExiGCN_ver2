@@ -1,0 +1,44 @@
+# Configuration for Amazon-Computer dataset
+
+model:
+  type: "exigcn"
+  num_layers: 2
+  hidden_dim: 128
+  dropout: 0.5
+  activation: "relu"
+
+training:
+  epochs: 300
+  learning_rate: 0.01
+  retraining_lr: 0.01
+  weight_decay: 0.0005
+  optimizer: "adam"
+  patience: 100
+
+experiment:
+  initial_ratio: 0.9
+  update_stages: [0.02, 0.04, 0.06, 0.08, 0.10]
+  num_runs: 10
+  seed: 42
+
+device:
+  use_cuda: true
+  gpu_id: 0
+
+dataset:
+  name: "amazon_computer"
+  num_classes: 10
+  num_features: 767
+  num_nodes: 13752
+
+data:
+  root: "./data"
+  normalize_features: true
+  normalize_adj: true
+  add_self_loops: true
+  use_sparse: true
+
+logging:
+  use_wandb: false
+  use_tensorboard: false
+  experiment_name: "amazon_computer_exigcn"

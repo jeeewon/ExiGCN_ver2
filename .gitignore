@@ -28,6 +28,8 @@ venv/
 # -------------------------------
 logs/
 wandb/
+debugs/
+results/
 runs/
 *.log
 *.out

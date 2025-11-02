@@ -1,0 +1,45 @@
+# Test Configuration for Cora-Full dataset
+# Quick test with multiple runs to validate output format
+
+model:
+  type: "exigcn"
+  num_layers: 3
+  hidden_dim: 256
+  dropout: 0.5
+  activation: "relu"
+
+training:
+  epochs: 100              # Increased from 50 for better convergence
+  learning_rate: 0.01
+  retraining_lr: 0.01
+  weight_decay: 0.005
+  optimizer: "adam"
+  patience: 30             # Increased from 20
+
+experiment:
+  initial_ratio: 0.9
+  update_stages: [0.02, 0.04]  # Only 2 stages for quick test
+  num_runs: 3              # Test multi-run output format
+  seed: 42
+
+device:
+  use_cuda: true
+  gpu_id: 0
+
+dataset:
+  name: "cora_full"
+  num_classes: 70
+  num_features: 8710
+  num_nodes: 19793
+
+data:
+  root: "./data"
+  normalize_features: true
+  normalize_adj: true
+  add_self_loops: true
+  use_sparse: true
+
+logging:
+  use_wandb: false
+  use_tensorboard: false
+  experiment_name: "cora_full_exigcn_test"

@@ -17,6 +17,7 @@ from models.base_gcn import BaseGCN
 from models.exigcn import ExiGCN
 from train.trainer_full import FullRetrainingTrainer
 from train.trainer_exi import ExiGCNTrainer
+from utils.summary_writer import SummaryWriter
 
 
 class IncrementalExperiment:
@@ -41,6 +42,7 @@ class IncrementalExperiment:
         
         # Results storage
         self.results = []
+        self.summary_writer = None  # Will be initialized when experiment starts
     
     def _default_config(self) -> Dict:
         """Default configuration."""
@@ -87,6 +89,14 @@ class IncrementalExperiment:
         loader = DatasetLoader(root=self.config['data']['root'])
         adj, features, labels, train_mask, val_mask, test_mask = loader.load_dataset(dataset_name)
         
+        # Move to device BEFORE creating GraphUpdater (CRITICAL!)
+        adj = adj.to(self.device)
+        features = features.to(self.device)
+        labels = labels.to(self.device)
+        train_mask = train_mask.to(self.device)
+        val_mask = val_mask.to(self.device)
+        test_mask = test_mask.to(self.device)
+        
         # Print dataset info
         print(f"\nDataset: {dataset_name}")
         print(f"  Nodes: {adj.size(0):,}")
@@ -94,8 +104,18 @@ class IncrementalExperiment:
         print(f"  Features: {features.size(1)}")
         print(f"  Classes: {labels.max().item() + 1}")
         
+        # Initialize summary writer
+        self.summary_writer = SummaryWriter(
+            dataset_name=dataset_name,
+            experiment_type='incremental'
+        )
+        self.summary_writer.write_configuration(self.config)
+        
         # Run multiple times
         num_runs = self.config['experiment']['num_runs']
+        print(f"\n[DEBUG] Number of runs configured: {num_runs}")
+        print(f"[DEBUG] Epochs: {self.config['training']['epochs']}")
+        print(f"[DEBUG] Patience: {self.config['training']['patience']}")
         
         for run in range(num_runs):
             print(f"\n{'='*70}")
@@ -265,7 +285,8 @@ class IncrementalExperiment:
             'val_acc': initial_results_full['val_acc'],
             'test_acc': initial_results_full['test_acc'],
             'val_f1_micro': initial_results_full['val_f1_micro'],
-            'test_f1_micro': initial_results_full['test_f1_micro']
+            'test_f1_micro': initial_results_full['test_f1_micro'],
+            'test_f1_macro': initial_results_full['test_f1_macro']  # Added
         })
         
         self.results.append({
@@ -279,16 +300,13 @@ class IncrementalExperiment:
             'val_acc': initial_results_exi['val_acc'],
             'test_acc': initial_results_exi['test_acc'],
             'val_f1_micro': initial_results_exi['val_f1_micro'],
-            'test_f1_micro': initial_results_exi['test_f1_micro']
+            'test_f1_micro': initial_results_exi['test_f1_micro'],
+            'test_f1_macro': initial_results_exi['test_f1_macro']  # Added
         })
         
         # ================================================================
-        # PHASE 2: Incremental Updates
+        # PHASE 2: Incremental Updates (INDEPENDENT SCENARIOS)
         # ================================================================
-        
-        current_adj = core_adj
-        current_features = core_features
-        current_labels = core_labels
         
         bucket_names = ['A', 'B', 'C', 'D', 'E']
         
@@ -296,11 +314,19 @@ class IncrementalExperiment:
             zip(bucket_names, self.config['experiment']['update_stages'])
         ):
             print(f"\n{'='*70}")
-            print(f"PHASE 2.{stage_idx + 1}: UPDATE STAGE {bucket_name} "
+            print(f"PHASE 2.{stage_idx + 1}: INDEPENDENT SCENARIO {bucket_name} "
                   f"(+{update_ratio*100:.0f}%)")
             print("="*70)
             
-            # Add bucket
+            # CRITICAL: Start from CORE each time (independent!)
+            # Scenario A: core + A
+            # Scenario B: core + B (NOT core + A + B!)
+            # Scenario C: core + C (NOT core + A + B + C!)
+            current_adj = core_adj.clone()
+            current_features = core_features.clone()
+            current_labels = core_labels.clone()
+            
+            # Add ONLY this scenario's bucket
             current_adj, current_features, current_labels = \
                 updater.add_bucket_to_graph(
                     current_adj, current_features, current_labels,
@@ -316,28 +342,21 @@ class IncrementalExperiment:
             # Update masks using node_mapping
             current_size = current_adj.size(0)
             
-            # Build cumulative node mapping
-            # Stage A: core + A
-            # Stage B: core + A + B
-            # Stage C: core + A + B + C
-            # etc.
+            # Build node mapping for THIS scenario only
             current_node_to_original = {}
             
-            # Add core nodes (already mapped)
+            # Add core nodes
             for old_idx, new_idx in node_mapping.items():
                 current_node_to_original[new_idx] = old_idx
             
-            # Add all buckets up to and including current stage
+            # Add ONLY current bucket's nodes
             offset = core_size
-            for i, prev_bucket_name in enumerate(bucket_names):
-                if i <= stage_idx:  # Include current stage
-                    for j, old_idx in enumerate(buckets[prev_bucket_name]):
-                        new_idx = offset + j
-                        current_node_to_original[new_idx] = old_idx
-                    offset += len(buckets[prev_bucket_name])
+            for j, old_idx in enumerate(buckets[bucket_name]):
+                new_idx = offset + j
+                current_node_to_original[new_idx] = old_idx
             
-            # DEBUG: Print mask information for this stage
-            print(f"\n[DEBUG] Stage {bucket_name} Mask Information:")
+            # DEBUG: Print mask information for this scenario
+            print(f"\n[DEBUG] Scenario {bucket_name} Mask Information:")
             print(f"  Current graph nodes: {current_size}")
             print(f"  Node mapping built with {len(current_node_to_original)} nodes")
             if len(current_node_to_original) != current_size:
@@ -371,6 +390,32 @@ class IncrementalExperiment:
                 current_train_mask, current_val_mask, current_test_mask
             )
             full_time = trainer_full.get_training_time()
+            
+            # CRITICAL: Reset ExiGCN to W_init for independent scenario!
+            # Each scenario starts from W_init, not from previous scenario's W
+            if trainer_exi.initial_weights is not None:
+                print("\n[ExiGCN] Resetting to W_init for independent scenario...")
+                for i, layer in enumerate(trainer_exi.model.layers):
+                    layer.W.data = trainer_exi.initial_weights[i]['W'].clone()
+                    if layer.bias is not None and trainer_exi.initial_weights[i]['bias'] is not None:
+                        layer.bias.data = trainer_exi.initial_weights[i]['bias'].clone()
+                
+                # CRITICAL: Recache Z/H at CORE (not clear!)
+                # forward_retraining needs cached_Z to compute Z' = Z + F + B·ΔW
+                # Without cached_Z, it becomes Z' = F + B·ΔW (missing Z!)
+                print("Recaching Z/H at core baseline...")
+                trainer_exi.model.cached_F = []  # Clear F/B (will be recomputed)
+                trainer_exi.model.cached_B = []
+                trainer_exi.model.eval()
+                with torch.no_grad():
+                    _ = trainer_exi.model.forward_initial(
+                        core_adj_norm, core_features_norm, cache=True
+                    )
+                
+                # Reset initial baseline to core
+                trainer_exi.initial_adj = core_adj_norm.clone()
+                trainer_exi.initial_features = core_features_norm.clone()
+                trainer_exi.initial_num_nodes = core_size
             
             # ExiGCN
             print("\n[ExiGCN] Efficient retraining...")
@@ -411,7 +456,8 @@ class IncrementalExperiment:
                 'val_acc': full_results['val_acc'],
                 'test_acc': full_results['test_acc'],
                 'val_f1_micro': full_results['val_f1_micro'],
-                'test_f1_micro': full_results['test_f1_micro']
+                'test_f1_micro': full_results['test_f1_micro'],
+                'test_f1_macro': full_results['test_f1_macro']  # Added
             })
             
             self.results.append({
@@ -426,6 +472,7 @@ class IncrementalExperiment:
                 'test_acc': exi_results['test_acc'],
                 'val_f1_micro': exi_results['val_f1_micro'],
                 'test_f1_micro': exi_results['test_f1_micro'],
+                'test_f1_macro': exi_results['test_f1_macro'],  # Added
                 'speedup': speedup,
                 'acc_diff': acc_diff
             })
@@ -456,6 +503,7 @@ class IncrementalExperiment:
         summary = df.groupby(['stage', 'method']).agg({
             'train_time': ['mean', 'std'],
             'test_acc': ['mean', 'std'],
+            'test_f1_macro': ['mean', 'std'],  # Changed to macro
             'speedup': 'mean',
             'acc_diff': 'mean'
         }).reset_index()
@@ -470,6 +518,123 @@ class IncrementalExperiment:
             avg_speedup = np.mean(full_times) / np.mean(exi_times)
             print(f"\nAverage Speedup: {avg_speedup:.2f}x")
             print(f"Average Accuracy Difference: {df['acc_diff'].mean():.4f}")
+        
+        # Generate paper-ready table
+        self._print_paper_table(df)
+        
+        # Write to summary file
+        if self.summary_writer is not None:
+            # Write paper-ready format
+            self.summary_writer.write_paper_format(df)
+            
+            # Write overall results
+            speedup_values = df[df['method'] == 'ExiGCN']['speedup'].dropna()
+            acc_diff_values = df[df['method'] == 'ExiGCN']['acc_diff'].dropna()
+            
+            if len(speedup_values) > 0:
+                self.summary_writer.write_overall_results(
+                    avg_speedup=speedup_values.mean(),
+                    avg_acc_diff=acc_diff_values.mean()
+                )
+            
+            # Close summary file
+            self.summary_writer.close()
+    
+    def _print_paper_table(self, df: pd.DataFrame):
+        """Print paper-ready LaTeX table with mean±std format."""
+        print("\n" + "="*70)
+        print("PAPER-READY TABLE (LaTeX Format)")
+        print("="*70)
+        
+        # Filter only retraining stages (not initial)
+        df_stages = df[df['stage'] != 'initial'].copy()
+        
+        # Group by stage and method
+        stages = df_stages['stage'].unique()
+        
+        print("\n% Copy this to your LaTeX paper:")
+        print("\\begin{table}[t]")
+        print("\\centering")
+        print("\\caption{Performance comparison on Cora-Full dataset}")
+        print("\\label{tab:results}")
+        print("\\begin{tabular}{l|cc|cc|c}")
+        print("\\hline")
+        print("Scenario & \\multicolumn{2}{c|}{Test Accuracy (\\%)} & \\multicolumn{2}{c|}{Test F1-Macro (\\%)} & Speedup \\\\")
+        print("         & Full & ExiGCN & Full & ExiGCN & \\\\")
+        print("\\hline")
+        
+        for stage in sorted(stages):
+            stage_data = df_stages[df_stages['stage'] == stage]
+            
+            # Full method
+            full_data = stage_data[stage_data['method'] == 'Full']
+            full_acc_mean = full_data['test_acc'].mean() * 100
+            full_acc_std = full_data['test_acc'].std() * 100
+            full_f1_mean = full_data['test_f1_macro'].mean() * 100  # Changed to macro
+            full_f1_std = full_data['test_f1_macro'].std() * 100
+            
+            # ExiGCN method
+            exi_data = stage_data[stage_data['method'] == 'ExiGCN']
+            exi_acc_mean = exi_data['test_acc'].mean() * 100
+            exi_acc_std = exi_data['test_acc'].std() * 100
+            exi_f1_mean = exi_data['test_f1_macro'].mean() * 100  # Changed to macro
+            exi_f1_std = exi_data['test_f1_macro'].std() * 100
+            speedup = exi_data['speedup'].mean()
+            
+            # Format: mean±std (handle NaN for single run)
+            if pd.isna(full_acc_std) or full_acc_std == 0:
+                full_acc_str = f"{full_acc_mean:.2f}"
+                full_f1_str = f"{full_f1_mean:.2f}"
+            else:
+                full_acc_str = f"{full_acc_mean:.2f}$\\pm${full_acc_std:.2f}"
+                full_f1_str = f"{full_f1_mean:.2f}$\\pm${full_f1_std:.2f}"
+            
+            if pd.isna(exi_acc_std) or exi_acc_std == 0:
+                exi_acc_str = f"{exi_acc_mean:.2f}"
+                exi_f1_str = f"{exi_f1_mean:.2f}"
+            else:
+                exi_acc_str = f"{exi_acc_mean:.2f}$\\pm${exi_acc_std:.2f}"
+                exi_f1_str = f"{exi_f1_mean:.2f}$\\pm${exi_f1_std:.2f}"
+            
+            print(f"{stage} & {full_acc_str} & {exi_acc_str} & {full_f1_str} & {exi_f1_str} & {speedup:.2f}x \\\\")
+        
+        print("\\hline")
+        print("\\end{tabular}")
+        print("\\end{table}")
+        
+        # Also print plain text version
+        print("\n" + "="*70)
+        print("PLAIN TEXT TABLE (for viewing)")
+        print("="*70)
+        print(f"\n{'Stage':<8} {'Method':<8} {'Test Acc (%)':<20} {'Test F1-Macro (%)':<20} {'Speedup':<10}")
+        print("-" * 70)
+        
+        for stage in sorted(stages):
+            stage_data = df_stages[df_stages['stage'] == stage]
+            
+            for method in ['Full', 'ExiGCN']:
+                method_data = stage_data[stage_data['method'] == method]
+                acc_mean = method_data['test_acc'].mean() * 100
+                acc_std = method_data['test_acc'].std() * 100
+                f1_mean = method_data['test_f1_macro'].mean() * 100  # Changed to macro
+                f1_std = method_data['test_f1_macro'].std() * 100
+                speedup = method_data['speedup'].mean()
+                
+                if pd.isna(acc_std) or acc_std == 0:
+                    acc_str = f"{acc_mean:.2f}"
+                    f1_str = f"{f1_mean:.2f}"
+                else:
+                    acc_str = f"{acc_mean:.2f}±{acc_std:.2f}"
+                    f1_str = f"{f1_mean:.2f}±{f1_std:.2f}"
+                
+                if method == 'ExiGCN':
+                    speedup_str = f"{speedup:.2f}x"
+                else:
+                    speedup_str = "-"
+                
+                print(f"{stage:<8} {method:<8} {acc_str:<20} {f1_str:<20} {speedup_str:<10}")
+        
+        print("\n" + "="*70)
 
 
 def main():
@@ -477,12 +642,12 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Run incremental experiment')
-    parser.add_argument('--dataset', type=str, default='cora_full',
-                       help='Dataset name')
-    parser.add_argument('--config', type=str, default='config/cora_full.yaml',
+    parser.add_argument('--dataset', type=str, default=None,
+                       help='Dataset name (if not specified, read from config)')
+    parser.add_argument('--config', type=str, default='configs/cora_full.yaml',
                        help='Config file path')
-    parser.add_argument('--num_runs', type=int, default=1,
-                       help='Number of runs')
+    parser.add_argument('--num_runs', type=int, default=None,
+                       help='Number of runs (overrides config)')
     parser.add_argument('--model', type=str, default=None,
                        choices=['exigcn', 'exigcn_lora'],
                        help='Model type: exigcn or exigcn_lora (overrides config)')
@@ -493,6 +658,11 @@ def main():
     
     # Run experiment
     experiment = IncrementalExperiment(config_path=args.config)
+    
+    # Get dataset name from config if not specified
+    if args.dataset is None:
+        args.dataset = experiment.config.get('dataset', {}).get('name', 'cora_full')
+        print(f"Dataset name from config: {args.dataset}")
     
     # Override model type if specified
     if args.model:
@@ -505,8 +675,9 @@ def main():
         print(f"Epochs overridden to: {args.epochs}")
     
     # Override num_runs if specified
-    if args.num_runs:
+    if args.num_runs is not None:
         experiment.config['experiment']['num_runs'] = args.num_runs
+        print(f"Num runs overridden to: {args.num_runs}")
     
     experiment.run_experiment(dataset_name=args.dataset)
 

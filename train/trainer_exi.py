@@ -127,18 +127,15 @@ class ExiGCNTrainer(BaseTrainer):
             print(f"\n  Delta adjacency nnz: {delta_adj._nnz()}")
             print(f"  Delta features non-zero: {(delta_features != 0).sum().item()}")
         
-        # ADAPTIVE BASELINE: Do NOT restore W to W_init
-        # Use accumulated W from previous stages (cascading)
-        # This makes each stage build on previous knowledge
-        
-        # Only reset delta_W to zero
+        # PAPER'S METHOD: Reset delta_W to zero
+        # W itself should be already reset to W_init by run_incremental.py
         for layer in self.model.layers:
             layer.delta_W.data.zero_()
             if layer.delta_bias is not None:
                 layer.delta_bias.data.zero_()
         
         if self.verbose:
-            print(f"  ✅ Using adaptive baseline (cascading W)")
+            print(f"  ✅ Using fixed baseline (paper's method)")
         
         # Prepare model for retraining
         self.model.prepare_for_retraining()
@@ -234,27 +231,23 @@ class ExiGCNTrainer(BaseTrainer):
             adj_updated, features_updated, labels_updated, val_mask, test_mask
         )
         
-        # NOW merge deltas for next stage
+        # NOW merge deltas into W
         if self.verbose:
             print("\nMerging delta weights...")
         self.model.merge_all_deltas()
         
-        # ADAPTIVE BASELINE: Update baseline for next stage
-        # This makes delta calculation incremental (smaller deltas)
-        self.initial_adj = adj_updated.clone()
-        self.initial_features = features_updated.clone()
-        self.initial_num_nodes = adj_updated.size(0)
+        # PAPER'S METHOD: Keep initial baseline FIXED at core
+        # DO NOT update initial_adj or initial_features
+        # They should remain as the original core graph
         
         if self.verbose:
-            print("Updated baseline for next stage (adaptive)")
+            print("Keeping baseline fixed (paper's method)")
         
-        # Recache Z and H for the NEW graph size with merged W
+        # Recache Z and H for the current graph size
+        # Use merged W for cache computation, but baseline stays at core
         self.model.eval()
         with torch.no_grad():
             _ = self.model.forward_initial(adj_updated, features_updated, cache=True)
-        
-        # Note: W is now accumulated (W_0 + ∆W_1 + ∆W_2 + ...)
-        # And baseline is updated (Â_t, H_t) for next stage
         
         # Set to initial training mode for next stage
         self.model.is_initial_training = True
